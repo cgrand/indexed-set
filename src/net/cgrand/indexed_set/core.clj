@@ -1,4 +1,4 @@
-(ns indexed-set)
+(ns net.cgrand.indexed-set.core)
 
 (defprotocol UniqueConstrained
   (constrain-unique [set key])  
@@ -90,6 +90,11 @@
   clojure.lang.Seqable
   (seq [this]
     (seq set))
+  clojure.lang.IFn
+  (invoke [this v]
+    (get this v))
+  (invoke [this v not-found]
+    (get this v not-found))
   Object
   (hashCode [this]
     (.hashCode set))

@@ -23,85 +23,117 @@
 (defn summary [set laws]
   ((summaries set) laws))
 
-(deftype IndexedSet [^clojure.lang.IPersistentSet set unique-indexes summaries]
+(deftype IndexedSet [pk unique-indexes summaries ^int _h]
   UniqueConstrained
   (constrain-unique [this key]
     (if (unique-indexes key)
       this
-      (let [index (into {} (map (juxt key identity) set))]
-        (if (= (count index) (count set))
-          (IndexedSet. set (assoc unique-indexes key index) summaries)
+      (let [index (into {} (map (juxt key identity) this))]
+        (if (= (count index) (count this))
+          (IndexedSet. pk (assoc unique-indexes key index) summaries _h)
           (throw (IllegalStateException. "Existing entries are not unique."))))))  
   (remove-unique-constraint [this key]
+    (when (= pk key)
+      (throw (IllegalStateException. 
+               "Can't remove the primary unicity constraint")))
     (let [new-unique-indexes (dissoc unique-indexes key)]
       (if (= unique-indexes new-unique-indexes)
         this
-        (IndexedSet. set new-unique-indexes summaries))))
+        (IndexedSet. pk new-unique-indexes summaries _h))))
   (unique-constraints [this]
      unique-indexes)
+  PrimaryConstrained
+  (constrain-primary [this key]
+    (cond
+      (= pk key) this 
+      (unique-indexes key) (IndexedSet. key unique-indexes summaries _h)
+      :else
+        (let [index (into {} (map (juxt key identity) this))]
+          (if (= (count index) (count this))
+            (IndexedSet. key (assoc unique-indexes key index) summaries _h)
+            (throw (IllegalStateException. "Existing entries are not unique."))))))
+  (primary-constraint [this] (unique-indexes pk))
   Summarized
   (add-summary [this laws]
     (if (summaries laws)
       this
-      (IndexedSet. set unique-indexes 
+      (IndexedSet. pk unique-indexes 
         (let [{:keys [plus zero]} laws] 
-          (assoc summaries laws (reduce plus zero set))))))
+          (assoc summaries laws (reduce plus zero this)))
+        _h)))
   (remove-summary [this laws]
     (let [new-summaries (dissoc summaries laws)]
       (if (= summaries new-summaries)
         this
-        (IndexedSet. set unique-indexes new-summaries))))
+        (IndexedSet. pk unique-indexes new-summaries _h))))
   (summaries [this]
     summaries)
   clojure.lang.IPersistentSet
-  (get [this value] (.get set value))
-  (contains [this value] (.contains set value))
+  (get [this value] (get (unique-indexes pk) (pk value)))
+  (contains [this value] (contains? (unique-indexes pk) (pk value)))
   (disjoin [this value]
-    (let [new-set (.disjoin set value)] 
-      (if (= new-set set)
-        this
-        (IndexedSet. new-set
-          (into unique-indexes (for [[k index] unique-indexes] 
-                                 [k (dissoc index (k value))]))
-          (into summaries (for [[{- :minus :as laws} summary] summaries]
-                            [laws (- summary value)]))))))
+    (if-let [kv (find (unique-indexes pk) (pk value))]
+      (IndexedSet. pk
+        (into unique-indexes (for [[k index] unique-indexes] 
+                               [k (dissoc index (k value))]))
+        (into summaries (for [[{- :minus :as laws} summary] summaries]
+                          [laws (- summary value)]))
+        (unchecked-subtract-int _h (hash (val kv))))
+      this))
   clojure.lang.IPersistentCollection
-  (count [this] (.count set))
+  (count [this] (count (unique-indexes pk)))
   (cons [this value]
-    (let [new-set (.cons set value)]
-      (if (= new-set set)
-        this
-        (if-let [clashes (seq (for [[k index] unique-indexes
-                                    :let [kv (find index (k value))]
-                                    :when kv]
-                                (val kv)))]
-          (conj (reduce disj this clashes) value)
-          (IndexedSet. new-set
-            (into unique-indexes (for [[k index] unique-indexes] 
-                                   [k (assoc index (k value) value)]))
-            (into summaries (for [[{+ :plus :as laws} summary] summaries]
-                              [laws (+ summary value)])))))))
+    (if (when-let [kv (find (unique-indexes pk) (pk value))]
+          (= value (val kv)))
+      this
+      (if-let [clashes (seq (for [[k index] unique-indexes
+                                  :let [kv (find index (k value))]
+                                  :when kv]
+                              (val kv)))]
+        (conj (reduce disj this clashes) value)
+        (IndexedSet. pk
+          (into unique-indexes (for [[k index] unique-indexes] 
+                                 [k (assoc index (k value) value)]))
+          (into summaries (for [[{+ :plus :as laws} summary] summaries]
+                            [laws (+ summary value)]))
+          (unchecked-add-int _h (hash value))))))
   (empty [this]
-    (IndexedSet. #{}
+    (IndexedSet. pk
       (zipmap (keys unique-indexes) (repeat {}))
-      (zipmap (keys summaries) (map :zero summaries))))
+      (zipmap (keys summaries) (map :zero (keys summaries)))
+      0))
   (equiv [this that]
-    (.equiv set that))
+    (.equals this that))
+  java.util.Set
+  (containsAll [this coll]
+    (every? #(contains? this %) coll))
+  (isEmpty [this]
+    (zero? (count this)))
+  (iterator [this]
+    (clojure.lang.SeqIterator. (seq this)))
+  (size [this]
+    (count this))
+  (toArray [this]
+    (into-array Object (seq this)))
+  (toArray [this a]
+    (into-array (-> a class .getComponentType) (seq this)))
   clojure.lang.Seqable
   (seq [this]
-    (seq set))
+    (vals (unique-indexes pk)))
   clojure.lang.IFn
   (invoke [this v]
     (get this v))
   (invoke [this v not-found]
     (get this v not-found))
   Object
-  (hashCode [this]
-    (.hashCode set))
+  (hashCode [this] _h)
   (equals [this that]
-    (.equals set that)))
+    (and
+      (instance? java.util.Set that)
+      (= (count this) (count that))
+      (every? #(contains? this %) that))))
 
-(def empty-indexed-set (IndexedSet. #{} {} {}))
+(def empty-indexed-set (IndexedSet. identity {identity {}} {} 0))
 
 (defrecord Op-By [key f init]
   clojure.lang.IFn

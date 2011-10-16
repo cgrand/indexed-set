@@ -1,5 +1,15 @@
 (ns net.cgrand.indexed-set.core)
 
+(defmacro ^{:private true} compat-1.2 []
+  (when (= (map *clojure-version* [:major :minor]) [1 2])
+    `(do
+       (defn unchecked-subtract-int [a# b#]
+         (unchecked-subtract (int a#) (int b#)))
+       (defn unchecked-add-int [a# b#]
+         (unchecked-add (int a#) (int b#))))))
+
+(compat-1.2)
+
 (defprotocol UniqueConstrained
   (constrain-unique [set key])  
   (remove-unique-constraint [set key])

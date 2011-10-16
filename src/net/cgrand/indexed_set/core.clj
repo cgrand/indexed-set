@@ -1,4 +1,19 @@
-(ns net.cgrand.indexed-set.core)
+;   Copyright (c) Christophe Grand, 2011. All rights reserved.
+
+;   The use and distribution terms for this software are covered by the
+;   Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)
+;   which can be found in the file epl-v10.html at the root of this 
+;   distribution.
+;   By using this software in any fashion, you are agreeing to be bound by
+;   the terms of this license.
+;   You must not remove this notice, or any other, from this software.
+
+(ns net.cgrand.indexed-set.core
+  "A set implementation which can
+   * maintain summaries (eg indexes),
+   * enforce unicity of items in regards to custom keys (fns),
+   * support primary key."
+  {:author "Christophe Grand"})
 
 (defmacro ^{:private true} compat-1.2 []
   (when (= (map *clojure-version* [:major :minor]) [1 2])
@@ -167,11 +182,35 @@
 (defn summary-by [set key laws]
   (summary set (aggregate-by laws key)))
 
-(defn index-by-laws [key]
+(defn index-laws [key]
   (aggregate-by (laws conj disj #{}) key))
 
 (defn add-index-by [set key]
-  (add-summary set (index-by-laws key)))
+  (add-summary set (index-laws key)))
 
-(defn get-index-by [set key]
-  (summary set (index-by-laws key)))
+(defn remove-index-by [set key]
+  (remove-summary set (index-laws key)))
+
+(defn index-by [set key]
+  (summary set (index-laws key)))
+
+(def indexed-set-options {:primary constrain-primary
+                          :unique constrain-unique
+                          :uniques #(reduce constrain-unique %1 %2)
+                          :index add-index-by
+                          :indexes #(reduce add-index-by %1 %2)
+                          :summary add-summary
+                          :summaries #(reduce add-summary %1 %2)})
+
+(defn indexed-set [items? & options]
+  (let [[items & options] (if (keyword? items?)
+                            (list* nil items? options)
+                            (list* items? options))
+        options (partition 2 options)
+        s (into empty-indexed-set items)]
+    (reduce (fn [s [o v]]
+              (if-let [f (indexed-set-options o)]
+                (f s v)
+                (throw (IllegalArgumentException. 
+                         (str "Unknown option: " o)))))
+            s options)))

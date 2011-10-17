@@ -15,6 +15,7 @@
    * support primary key."
   {:author "Christophe Grand"})
 
+;; define unchecked-subtract-int and unchecked-add-int for 1.2
 (defmacro ^{:private true} compat-1.2 []
   (when (= (map *clojure-version* [:major :minor]) [1 2])
     `(do
@@ -26,26 +27,55 @@
 (compat-1.2)
 
 (defprotocol UniqueConstrained
-  (constrain-unique [set key])  
-  (remove-unique-constraint [set key])
-  (unique-constraints [set]))
-
-(defn laws [plus minus zero]
-  {:plus plus :minus minus :zero zero})
+  "Protocol to manage unicity constraints. Unicity constraints modify the
+   behaviour of conj."
+  (constrain-unique [set key] 
+    "Returns a new set where the function key is a unique constraint. If the
+     existing items are not unique in regards to key, throws an exception.")  
+  (remove-unique-constraint [set key]
+    "Returns a new set where the function key is not a unique constraint any
+     more.")
+  (unique-constraints [set]
+    "Returns a map of key functions to unicity indexes (map from unique keys
+     (results of calling a key function on items) to actual items."))
 
 (defprotocol PrimaryConstrained
-  (constrain-primary [set key])
-  (primary-constraint [set]))
+  "Protocol to manage primary constraints. Primary constraints modify the
+   behaviour of get, disj and contains?."
+  (constrain-primary [set key]
+    "Returns a new set where the function key is the primary constraint. The
+     previous primary constraint remains as a unicity constraint. If the items
+     are not unique for the new primary key, throws an exception.")
+  (primary-constraint [set]
+    "Returns a map from primary key values (results of the key fn) to items"))
 
-(defn remove-primary-constraint [set]
+(defn remove-primary-constraint 
+ "Removes the current primary key fn. Equivalent to
+  (constrain-primary set identity)."
+ [set]
   (constrain-primary set identity))
 
-(defprotocol Summarized
-  (add-summary [set laws])
-  (remove-summary [set laws])
-  (summaries [set]))
+(defn laws
+ "Returns a laws map used for summaries. If items are of type A and the
+  summary of type B then plus and minus are of type B*A->B and zero is of
+  type B. zero is the initial value for the summary, plus updates the summary
+  when a new item is added, minus when it is removes."
+ [plus minus zero]
+  {:plus plus :minus minus :zero zero})
 
-(defn summary [set laws]
+(defprotocol Summarized
+ "Protocol to manage \"online\" summaries (views, indexes, etc.). The value
+  of a summary is always equal to (reduce (:plus laws) (:zero laws) set)."
+  (add-summary [set laws]
+    "Returns a new set with the additional summary specified by laws.")
+  (remove-summary [set laws]
+    "Returns a new set without the summary specified by laws.")
+  (summaries [set]
+    "Returns a map of laws to actual summary values."))
+
+(defn summary
+ "Returns the actual summary value for the summary specified by laws."
+ [set laws]
   ((summaries set) laws))
 
 (deftype IndexedSet [pk unique-indexes summaries ^int _h]
@@ -158,7 +188,9 @@
       (= (count this) (count that))
       (every? #(contains? this %) that))))
 
-(def empty-indexed-set (IndexedSet. identity {identity {}} {} 0))
+(def ^{:doc "An empty indexed-set with no constraints and no summaries,
+             equivalent to a regular set."} 
+  empty-indexed-set (IndexedSet. identity {identity {}} {} 0))
 
 (defrecord Op-By [key f init]
   clojure.lang.IFn
@@ -168,41 +200,61 @@
 
 (defn- op-by [key f init] (Op-By. key f init))
 
-(defn aggregate-by [{:keys [plus minus zero]} key]
+(defn aggregate-by
+ "Given summarization laws and a key function, returns new summarization laws
+  which compute sub-summaries according to the original laws for items grouped
+  by key."
+ [{:keys [plus minus zero]} key]
   {:plus (op-by key plus zero)
    :minus (op-by key minus zero)
    :zero {}})
 
-(defn add-summary-by [set key laws]
+(defn add-summary-by 
+ "\"Grouped by\" variant of add-summary." 
+ [set key laws]
   (add-summary set (aggregate-by laws key)))
 
-(defn remove-summary-by [set key laws]
+(defn remove-summary-by 
+ "\"Grouped by\" variant of remove-summary." 
+ [set key laws]
   (remove-summary set (aggregate-by laws key)))
 
-(defn summary-by [set key laws]
+(defn summary-by 
+ "\"Grouped by\" variant of summary."
+ [set key laws]
   (summary set (aggregate-by laws key)))
 
-(defn index-laws [key]
+(defn index-laws
+ "Given a key function, returns summarizations laws to compute an index."
+ [key]
   (aggregate-by (laws conj disj #{}) key))
 
-(defn add-index-by [set key]
+(defn add-index
+ "Returns a new set with an index for the specified key added."
+ [set key]
   (add-summary set (index-laws key)))
 
-(defn remove-index-by [set key]
+(defn remove-index
+ "Returns a new set with the index for the specified key removed."
+ [set key]
   (remove-summary set (index-laws key)))
 
-(defn index-by [set key]
+(defn index
+ "Returns the index for the specified key."
+ [set key]
   (summary set (index-laws key)))
 
 (def indexed-set-options {:primary constrain-primary
                           :unique constrain-unique
                           :uniques #(reduce constrain-unique %1 %2)
-                          :index add-index-by
-                          :indexes #(reduce add-index-by %1 %2)
+                          :index add-index
+                          :indexes #(reduce add-index %1 %2)
                           :summary add-summary
                           :summaries #(reduce add-summary %1 %2)})
 
-(defn indexed-set [items? & options]
+(defn indexed-set
+ "Helper function to create an indexed-set. See indexed-set-options for
+  supported options." [items? & options]
   (let [[items & options] (if (keyword? items?)
                             (list* nil items? options)
                             (list* items? options))
